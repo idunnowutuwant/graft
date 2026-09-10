@@ -1,8 +1,15 @@
 ﻿# graft
 
-AST-aware syntactic merge driver for Git (TypeScript / JavaScript).
+AST-aware syntactic merge driver for Git (TypeScript, Python, Go, JSON).
 
-Standard line-based Git merge triggers unnecessary conflicts when branches modify adjacent imports or append functions. `graft` resolves these semantically using Tree-sitter.
+Standard line-based Git merge triggers unnecessary conflicts when branches modify adjacent imports, package dependencies, or append functions. `graft` resolves these structurally using Tree-sitter.
+
+## Supported Languages & Formats
+
+- **TypeScript / JavaScript** (`.ts`, `.tsx`, `.js`, `.jsx`)
+- **Python** (`.py`)
+- **Go** (`.go`)
+- **JSON / Config** (`package.json`, `.json`)
 
 ## Visual Comparison
 
