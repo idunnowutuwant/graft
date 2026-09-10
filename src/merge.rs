@@ -1,6 +1,7 @@
-use crate::ast::{parse_module, DeclarationItem, ImportGroup};
+﻿use crate::ast::{parse_module, DeclarationItem, ImportGroup};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum MergeFailure {
     Conflict(String),
     SystemError,
@@ -372,6 +373,7 @@ fn render_imports(imports: &BTreeMap<String, ImportGroup>) -> String {
         format!("{}\n", lines.join("\n"))
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
