@@ -1,4 +1,4 @@
-# graft
+# graft [![CI](https://github.com/idunnowutuwant/graft/actions/workflows/ci.yml/badge.svg)](https://github.com/idunnowutuwant/graft/actions/workflows/ci.yml)
 
 AST-aware syntactic merge driver for Git (TypeScript / JavaScript).
 
@@ -16,3 +16,4 @@ cargo install --git https://github.com/idunnowutuwant/graft
 graft init          # Current repo
 graft init --global # All repos
 ```
+

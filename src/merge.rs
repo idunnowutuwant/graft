@@ -372,3 +372,18 @@ fn render_imports(imports: &BTreeMap<String, ImportGroup>) -> String {
         format!("{}\n", lines.join("\n"))
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ast_merge_imports_and_declarations() {
+        let base = "import { useState } from \"react\";\n\nexport function A() {}";
+        let ours = "import { useState, useEffect } from \"react\";\n\nexport function A() {}\n\nexport function B() {}";
+        let theirs = "import { useState, useMemo } from \"react\";\n\nexport function A() {}\n\nexport function C() {}";
+        let res = merge_module(base, ours, theirs, false).unwrap();
+        assert!(res.contains("useEffect, useMemo, useState"));
+        assert!(res.contains("export function B() {}"));
+        assert!(res.contains("export function C() {}"));
+    }
+}
