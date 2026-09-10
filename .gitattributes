@@ -1,0 +1,4 @@
+*.ts merge=graft
+*.tsx merge=graft
+*.js merge=graft
+*.jsx merge=graft
