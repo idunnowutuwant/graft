@@ -1,10 +1,11 @@
 mod ast;
 mod init;
+mod json_merge;
 mod merge;
 
 use clap::{Parser, Subcommand};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 #[derive(Parser, Debug)]
@@ -75,8 +76,19 @@ fn main() -> ExitCode {
         .and_then(|e| e.to_str())
         .unwrap_or("ts");
 
-    let is_supported = matches!(ext, "ts" | "tsx" | "js" | "jsx");
+    if ext == "json" {
+        if let Some(merged_json) = json_merge::merge_json(&base_content, &ours_content, &theirs_content) {
+            let final_output = restore_newlines(merged_json, uses_crlf);
+            return if atomic_write(&ours_path, &final_output) {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            };
+        }
+        return fallback_diffy_merge(&base_content, &ours_content, &theirs_content, &ours_path, uses_crlf);
+    }
 
+    let is_supported = matches!(ext, "ts" | "tsx" | "js" | "jsx");
     if !is_supported {
         return fallback_diffy_merge(&base_content, &ours_content, &theirs_content, &ours_path, uses_crlf);
     }
@@ -86,20 +98,33 @@ fn main() -> ExitCode {
     match merge::merge_module(&base_content, &ours_content, &theirs_content, is_tsx) {
         Ok(merged) => {
             let final_output = restore_newlines(merged, uses_crlf);
-            if fs::write(&ours_path, final_output).is_err() {
-                return ExitCode::from(1);
+            if atomic_write(&ours_path, &final_output) {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
             }
-            ExitCode::SUCCESS
         }
         Err(merge::MergeFailure::Conflict(content)) => {
             let final_output = restore_newlines(content, uses_crlf);
-            let _ = fs::write(&ours_path, final_output);
+            let _ = atomic_write(&ours_path, &final_output);
             ExitCode::from(1)
         }
         Err(merge::MergeFailure::SystemError) => {
             fallback_diffy_merge(&base_content, &ours_content, &theirs_content, &ours_path, uses_crlf)
         }
     }
+}
+
+fn atomic_write(target: &Path, content: &str) -> bool {
+    let tmp_file = target.with_extension("tmp_graft");
+    if fs::write(&tmp_file, content).is_err() {
+        return false;
+    }
+    if fs::rename(&tmp_file, target).is_err() {
+        let _ = fs::remove_file(tmp_file);
+        return false;
+    }
+    true
 }
 
 fn normalize_newlines(s: &str) -> String {
@@ -124,7 +149,7 @@ fn fallback_diffy_merge(
     match diffy::merge(base, ours, theirs) {
         Ok(clean) => {
             let output = restore_newlines(clean, uses_crlf);
-            if fs::write(target, output).is_ok() {
+            if atomic_write(target, &output) {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::from(1)
@@ -132,7 +157,7 @@ fn fallback_diffy_merge(
         }
         Err(conflict) => {
             let output = restore_newlines(conflict, uses_crlf);
-            let _ = fs::write(target, output);
+            let _ = atomic_write(target, &output);
             ExitCode::from(1)
         }
     }

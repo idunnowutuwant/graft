@@ -1,7 +1,7 @@
 ﻿use crate::ast::{parse_module, DeclarationItem, ImportGroup};
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MergeFailure {
     Conflict(String),
     SystemError,
@@ -387,5 +387,15 @@ mod tests {
         assert!(res.contains("useEffect, useMemo, useState"));
         assert!(res.contains("export function B() {}"));
         assert!(res.contains("export function C() {}"));
+    }
+
+    #[test]
+    fn test_preamble_and_directives_preservation() {
+        let base = "\"use client\";\n// comment\nimport { A } from \"mod\";";
+        let ours = "\"use client\";\n// comment\nimport { A, B } from \"mod\";";
+        let theirs = "\"use client\";\n// comment\nimport { A, C } from \"mod\";";
+        let res = merge_module(base, ours, theirs, true).unwrap();
+        assert!(res.starts_with("\"use client\";\n// comment"));
+        assert!(res.contains("import { A, B, C } from \"mod\";"));
     }
 }
