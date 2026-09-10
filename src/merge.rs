@@ -377,6 +377,7 @@ fn render_imports(imports: &BTreeMap<String, ImportGroup>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     #[test]
     fn test_ast_merge_imports_and_declarations() {
@@ -397,5 +398,44 @@ mod tests {
         let res = merge_module(base, ours, theirs, true).unwrap();
         assert!(res.starts_with("\"use client\";\n// comment"));
         assert!(res.contains("import { A, B, C } from \"mod\";"));
+    }
+
+    #[test]
+    fn test_enterprise_scale_stress_benchmark() {
+        let mut base = String::new();
+        let mut ours = String::new();
+        let mut theirs = String::new();
+
+        for i in 0..200 {
+            base.push_str(&format!("import {{ sym{} }} from \"pkg{}\";\n", i, i));
+            ours.push_str(&format!("import {{ sym{} }} from \"pkg{}\";\n", i, i));
+            theirs.push_str(&format!("import {{ sym{} }} from \"pkg{}\";\n", i, i));
+        }
+
+        for i in 0..500 {
+            let func = format!("\nexport function fn_{}() {{\n    const x = {};\n    return x * 2;\n}}\n", i, i);
+            base.push_str(&func);
+            ours.push_str(&func);
+            theirs.push_str(&func);
+        }
+
+        for i in 500..550 {
+            ours.push_str(&format!("\nexport function ours_added_{}() {{\n    return {};\n}}\n", i, i));
+        }
+
+        for i in 550..600 {
+            theirs.push_str(&format!("\nexport function theirs_added_{}() {{\n    return {};\n}}\n", i, i));
+        }
+
+        let start = Instant::now();
+        let result = merge_module(&base, &ours, &theirs, false);
+        let duration = start.elapsed();
+
+        assert!(result.is_ok());
+        let merged = result.unwrap();
+
+        assert!(merged.contains("ours_added_500"));
+        assert!(merged.contains("theirs_added_550"));
+        assert!(duration.as_millis() < 500, "Benchmark failed: took {}ms", duration.as_millis());
     }
 }

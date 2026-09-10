@@ -2,3 +2,5 @@
 *.tsx merge=graft
 *.js merge=graft
 *.jsx merge=graft*.json merge=graft
+*.py merge=graft
+*.go merge=graft

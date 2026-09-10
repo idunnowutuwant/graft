@@ -1,6 +1,8 @@
 mod ast;
 mod init;
 mod json_merge;
+mod lang_go;
+mod lang_python;
 mod merge;
 
 use clap::{Parser, Subcommand};
@@ -86,6 +88,48 @@ fn main() -> ExitCode {
             };
         }
         return fallback_diffy_merge(&base_content, &ours_content, &theirs_content, &ours_path, uses_crlf);
+    }
+
+    if ext == "py" {
+        return match lang_python::merge_python(&base_content, &ours_content, &theirs_content) {
+            Ok(merged) => {
+                let final_output = restore_newlines(merged, uses_crlf);
+                if atomic_write(&ours_path, &final_output) {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(1)
+                }
+            }
+            Err(merge::MergeFailure::Conflict(content)) => {
+                let final_output = restore_newlines(content, uses_crlf);
+                let _ = atomic_write(&ours_path, &final_output);
+                ExitCode::from(1)
+            }
+            Err(merge::MergeFailure::SystemError) => {
+                fallback_diffy_merge(&base_content, &ours_content, &theirs_content, &ours_path, uses_crlf)
+            }
+        };
+    }
+
+    if ext == "go" {
+        return match lang_go::merge_go(&base_content, &ours_content, &theirs_content) {
+            Ok(merged) => {
+                let final_output = restore_newlines(merged, uses_crlf);
+                if atomic_write(&ours_path, &final_output) {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(1)
+                }
+            }
+            Err(merge::MergeFailure::Conflict(content)) => {
+                let final_output = restore_newlines(content, uses_crlf);
+                let _ = atomic_write(&ours_path, &final_output);
+                ExitCode::from(1)
+            }
+            Err(merge::MergeFailure::SystemError) => {
+                fallback_diffy_merge(&base_content, &ours_content, &theirs_content, &ours_path, uses_crlf)
+            }
+        };
     }
 
     let is_supported = matches!(ext, "ts" | "tsx" | "js" | "jsx");
