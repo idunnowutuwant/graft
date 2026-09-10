@@ -1,8 +1,46 @@
-# graft [![CI](https://github.com/idunnowutuwant/graft/actions/workflows/ci.yml/badge.svg)](https://github.com/idunnowutuwant/graft/actions/workflows/ci.yml)
+﻿# graft
 
 AST-aware syntactic merge driver for Git (TypeScript / JavaScript).
 
-Resolves import conflicts and top-level function/class additions semantically using Tree-sitter. Falls back to standard diff3 if ambiguous.
+Standard line-based Git merge triggers unnecessary conflicts when branches modify adjacent imports or append functions. `graft` resolves these semantically using Tree-sitter.
+
+## Visual Comparison
+
+### 1. Concurrent Imports
+
+Standard Git:
+```diff
+<<<<<<< HEAD
+import { useState, useEffect } from "react";
+=======
+import { useState, useMemo } from "react";
+>>>>>>> feature-b
+```
+
+With graft:
+```typescript
+import { useEffect, useMemo, useState } from "react";
+```
+
+---
+
+### 2. Appending Top-Level Functions
+
+Standard Git:
+```diff
+<<<<<<< HEAD
+export function UserProfile() { ... }
+=======
+export function SettingsModal() { ... }
+>>>>>>> feature-b
+```
+
+With graft:
+```typescript
+export function UserProfile() { ... }
+
+export function SettingsModal() { ... }
+```
 
 ## Install
 
@@ -13,7 +51,6 @@ cargo install --git https://github.com/idunnowutuwant/graft
 ## Setup
 
 ```bash
-graft init          # Current repo
-graft init --global # All repos
+graft init          # Current repository
+graft init --global # Global
 ```
-
