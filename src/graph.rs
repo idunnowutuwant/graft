@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 pub struct DependencyGraph {
     pub forward_deps: HashMap<PathBuf, HashSet<PathBuf>>,
     pub reverse_deps: HashMap<PathBuf, HashSet<PathBuf>>,
+    pub endpoint_registry: HashMap<String, HashSet<PathBuf>>,
 }
 
 impl DependencyGraph {
@@ -21,8 +22,28 @@ impl DependencyGraph {
                     graph.forward_deps.entry(file.clone()).or_default().insert(imp.clone());
                     graph.reverse_deps.entry(imp).or_default().insert(file.clone());
                 }
+
+                let endpoints = Self::extract_api_endpoints(&content);
+                for ep in endpoints {
+                    graph.endpoint_registry.entry(ep).or_default().insert(file.clone());
+                }
             }
         }
+
+        for files_sharing_endpoints in graph.endpoint_registry.values() {
+            let file_list: Vec<_> = files_sharing_endpoints.iter().cloned().collect();
+            for i in 0..file_list.len() {
+                for j in (i + 1)..file_list.len() {
+                    let f1 = &file_list[i];
+                    let f2 = &file_list[j];
+                    if f1.extension() != f2.extension() {
+                        graph.reverse_deps.entry(f1.clone()).or_default().insert(f2.clone());
+                        graph.reverse_deps.entry(f2.clone()).or_default().insert(f1.clone());
+                    }
+                }
+            }
+        }
+
         graph
     }
 
@@ -56,7 +77,7 @@ impl DependencyGraph {
                         Self::collect_source_files(&path, files);
                     }
                 } else if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                    if matches!(ext, "ts" | "tsx" | "js" | "jsx" | "rs" | "py" | "go") {
+                    if matches!(ext, "ts" | "tsx" | "js" | "jsx" | "rs" | "py" | "go" | "java" | "proto" | "graphql") {
                         files.push(path);
                     }
                 }
@@ -71,10 +92,10 @@ impl DependencyGraph {
         for line in content.lines() {
             let trimmed = line.trim();
             if trimmed.starts_with("import ") || trimmed.starts_with("from ") || trimmed.starts_with("use ") {
-                for token in trimmed.split(|c: char| c == '"' || c == '\'' || c.is_whitespace()) {
+                for token in trimmed.split(|c: char| c == '"' || c == '\'' || c == ';' || c.is_whitespace()) {
                     if token.starts_with("./") || token.starts_with("../") {
                         let candidate = parent.join(token);
-                        for ext in &["ts", "tsx", "js", "jsx", "rs", "py", "go"] {
+                        for ext in &["ts", "tsx", "js", "jsx", "rs", "py", "go", "java", "proto", "graphql"] {
                             let resolved = candidate.with_extension(ext);
                             if resolved.exists() {
                                 results.push(resolved);
@@ -86,6 +107,22 @@ impl DependencyGraph {
             }
         }
         results
+    }
+
+    fn extract_api_endpoints(content: &str) -> HashSet<String> {
+        let mut endpoints = HashSet::new();
+        for line in content.lines() {
+            for token in line.split(|c: char| c == '"' || c == '\'' || c == '`') {
+                let token = token.trim();
+                if token.starts_with("/api/") || token.starts_with("/v1/") || token.starts_with("/v2/") {
+                    let clean_endpoint = token.split('?').next().unwrap_or(token);
+                    if clean_endpoint.len() > 5 {
+                        endpoints.insert(clean_endpoint.to_string());
+                    }
+                }
+            }
+        }
+        endpoints
     }
 }
 
@@ -107,5 +144,17 @@ mod tests {
         assert_eq!(count, 2);
         assert!(affected.contains(&b));
         assert!(affected.contains(&c));
+    }
+
+    #[test]
+    fn test_cross_language_endpoint_linking() {
+        let py_code = "app.add_route('/api/v1/orders', OrderHandler)";
+        let ts_code = "fetch('/api/v1/orders').then(res => res.json())";
+
+        let py_endpoints = DependencyGraph::extract_api_endpoints(py_code);
+        let ts_endpoints = DependencyGraph::extract_api_endpoints(ts_code);
+
+        assert!(py_endpoints.contains("/api/v1/orders"));
+        assert!(ts_endpoints.contains("/api/v1/orders"));
     }
 }
