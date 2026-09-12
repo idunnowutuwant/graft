@@ -1,9 +1,24 @@
+mod ai;
 mod ast;
+mod chronicle;
+mod explainer;
+mod git_state;
 mod init;
 mod json_merge;
+mod lang_cpp;
 mod lang_go;
+mod lang_java;
 mod lang_python;
+mod lang_rust;
+mod leakguard;
 mod merge;
+mod mergetool;
+mod policy;
+mod radar;
+mod repro;
+mod semantic;
+mod session;
+mod trace_ctx;
 
 use clap::{Parser, Subcommand};
 use std::fs;
@@ -11,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 #[derive(Parser, Debug)]
-#[command(name = "graft", version)]
+#[command(name = "graft", version, about = "AST-aware cognitive merge driver for Git")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -27,6 +42,12 @@ struct Cli {
 
     #[arg(short, long, value_name = "PATH")]
     path: Option<PathBuf>,
+
+    #[arg(long)]
+    ai: bool,
+
+    #[arg(long)]
+    repro: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -35,16 +56,75 @@ enum Commands {
         #[arg(short, long)]
         global: bool,
     },
+    Doctor,
+    Mergetool {
+        #[arg(value_name = "BASE")]
+        base: PathBuf,
+        #[arg(value_name = "OURS")]
+        ours: PathBuf,
+        #[arg(value_name = "THEIRS")]
+        theirs: PathBuf,
+        #[arg(short, long, value_name = "OUTPUT")]
+        output: PathBuf,
+    },
+    Radar {
+        #[arg(value_name = "TARGET_BRANCH", default_value = "main")]
+        target: String,
+    },
+    Undo {
+        #[arg(value_name = "PATH")]
+        path: PathBuf,
+    },
+    Log,
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    if let Some(Commands::Init { global }) = cli.command {
-        return match init::run(global) {
-            Ok(_) => ExitCode::SUCCESS,
-            Err(_) => ExitCode::from(1),
-        };
+    if let Some(command) = cli.command {
+        match command {
+            Commands::Init { global } => {
+                return match init::run(global) {
+                    Ok(_) => ExitCode::SUCCESS,
+                    Err(_) => ExitCode::from(1),
+                };
+            }
+            Commands::Doctor => {
+                return match init::doctor() {
+                    Ok(_) => ExitCode::SUCCESS,
+                    Err(_) => ExitCode::from(1),
+                };
+            }
+            Commands::Mergetool { base, ours, theirs, output } => {
+                return match mergetool::run_interactive(&base, &ours, &theirs, &output) {
+                    Ok(_) => ExitCode::SUCCESS,
+                    Err(_) => ExitCode::from(1),
+                };
+            }
+            Commands::Radar { target } => {
+                return match radar::ConflictRadar::scan(&target) {
+                    Ok(_) => ExitCode::SUCCESS,
+                    Err(_) => ExitCode::from(1),
+                };
+            }
+            Commands::Undo { path } => {
+                let chronicle = chronicle::Chronicle::new();
+                return match chronicle.rollback_latest(&path) {
+                    Ok(_) => {
+                        println!("✔ Rolled back {} to previous merge snapshot", path.display());
+                        ExitCode::SUCCESS
+                    }
+                    Err(e) => {
+                        eprintln!("✖ Rollback failed: {}", e);
+                        ExitCode::from(1)
+                    }
+                };
+            }
+            Commands::Log => {
+                chronicle::Chronicle::new().list_history();
+                return ExitCode::SUCCESS;
+            }
+        }
     }
 
     let (base_path, ours_path, theirs_path) = match (cli.base, cli.ours, cli.theirs) {
@@ -82,79 +162,137 @@ fn main() -> ExitCode {
         if let Some(merged_json) = json_merge::merge_json(&base_content, &ours_content, &theirs_content) {
             let final_output = restore_newlines(merged_json, uses_crlf);
             return if atomic_write(&ours_path, &final_output) {
+                session::SessionManager::new().cleanup();
                 ExitCode::SUCCESS
             } else {
                 ExitCode::from(1)
             };
         }
-        return fallback_diffy_merge(&base_content, &ours_content, &theirs_content, &ours_path, uses_crlf);
+        return fallback_diffy_merge(&base_content, &ours_content, &theirs_content, &ours_path, uses_crlf, cli.repro, cli.path.as_deref());
     }
 
     if ext == "py" {
-        return match lang_python::merge_python(&base_content, &ours_content, &theirs_content) {
-            Ok(merged) => {
-                let final_output = restore_newlines(merged, uses_crlf);
-                if atomic_write(&ours_path, &final_output) {
-                    ExitCode::SUCCESS
-                } else {
-                    ExitCode::from(1)
-                }
-            }
-            Err(merge::MergeFailure::Conflict(content)) => {
-                let final_output = restore_newlines(content, uses_crlf);
-                let _ = atomic_write(&ours_path, &final_output);
-                ExitCode::from(1)
-            }
-            Err(merge::MergeFailure::SystemError) => {
-                fallback_diffy_merge(&base_content, &ours_content, &theirs_content, &ours_path, uses_crlf)
-            }
-        };
+        return handle_merge_result(
+            lang_python::merge_python(&base_content, &ours_content, &theirs_content),
+            &base_content,
+            &ours_content,
+            &theirs_content,
+            &ours_path,
+            uses_crlf,
+            cli.repro,
+            cli.path.as_deref(),
+        );
     }
 
     if ext == "go" {
-        return match lang_go::merge_go(&base_content, &ours_content, &theirs_content) {
-            Ok(merged) => {
-                let final_output = restore_newlines(merged, uses_crlf);
-                if atomic_write(&ours_path, &final_output) {
-                    ExitCode::SUCCESS
-                } else {
-                    ExitCode::from(1)
-                }
-            }
-            Err(merge::MergeFailure::Conflict(content)) => {
-                let final_output = restore_newlines(content, uses_crlf);
-                let _ = atomic_write(&ours_path, &final_output);
-                ExitCode::from(1)
-            }
-            Err(merge::MergeFailure::SystemError) => {
-                fallback_diffy_merge(&base_content, &ours_content, &theirs_content, &ours_path, uses_crlf)
-            }
-        };
+        return handle_merge_result(
+            lang_go::merge_go(&base_content, &ours_content, &theirs_content),
+            &base_content,
+            &ours_content,
+            &theirs_content,
+            &ours_path,
+            uses_crlf,
+            cli.repro,
+            cli.path.as_deref(),
+        );
+    }
+
+    if ext == "rs" {
+        return handle_merge_result(
+            lang_rust::merge_rust(&base_content, &ours_content, &theirs_content),
+            &base_content,
+            &ours_content,
+            &theirs_content,
+            &ours_path,
+            uses_crlf,
+            cli.repro,
+            cli.path.as_deref(),
+        );
+    }
+
+    if ext == "java" {
+        return handle_merge_result(
+            lang_java::merge_java(&base_content, &ours_content, &theirs_content),
+            &base_content,
+            &ours_content,
+            &theirs_content,
+            &ours_path,
+            uses_crlf,
+            cli.repro,
+            cli.path.as_deref(),
+        );
+    }
+
+    if matches!(ext, "cpp" | "cc" | "cxx" | "c" | "h" | "hpp") {
+        return handle_merge_result(
+            lang_cpp::merge_cpp(&base_content, &ours_content, &theirs_content),
+            &base_content,
+            &ours_content,
+            &theirs_content,
+            &ours_path,
+            uses_crlf,
+            cli.repro,
+            cli.path.as_deref(),
+        );
     }
 
     let is_supported = matches!(ext, "ts" | "tsx" | "js" | "jsx");
     if !is_supported {
-        return fallback_diffy_merge(&base_content, &ours_content, &theirs_content, &ours_path, uses_crlf);
+        return fallback_diffy_merge(&base_content, &ours_content, &theirs_content, &ours_path, uses_crlf, cli.repro, cli.path.as_deref());
     }
 
     let is_tsx = matches!(ext, "tsx" | "jsx");
+    let fallback_path = PathBuf::from("current_file.ts");
+    let target_path = cli.path.as_deref().unwrap_or(&fallback_path);
 
-    match merge::merge_module(&base_content, &ours_content, &theirs_content, is_tsx) {
+    handle_merge_result(
+        merge::merge_module(&base_content, &ours_content, &theirs_content, is_tsx, cli.ai, target_path),
+        &base_content,
+        &ours_content,
+        &theirs_content,
+        &ours_path,
+        uses_crlf,
+        cli.repro,
+        cli.path.as_deref(),
+    )
+}
+
+fn handle_merge_result(
+    result: Result<String, merge::MergeFailure>,
+    base: &str,
+    ours: &str,
+    theirs: &str,
+    target: &PathBuf,
+    uses_crlf: bool,
+    enable_repro: bool,
+    relative_path: Option<&Path>,
+) -> ExitCode {
+    match result {
         Ok(merged) => {
             let final_output = restore_newlines(merged, uses_crlf);
-            if atomic_write(&ours_path, &final_output) {
+            if atomic_write(target, &final_output) {
+                let chronicle = chronicle::Chronicle::new();
+                chronicle.record(target, ours, &final_output);
+                session::SessionManager::new().cleanup();
                 ExitCode::SUCCESS
             } else {
                 ExitCode::from(1)
             }
         }
         Err(merge::MergeFailure::Conflict(content)) => {
+            if enable_repro {
+                if let Some(rel) = relative_path {
+                    if let Some(fixture) = repro::ReproGenerator::generate_fixture(rel, base, ours, theirs) {
+                        eprintln!("[graft repro] Generated isolated conflict fixture at: {}", fixture.display());
+                    }
+                }
+            }
             let final_output = restore_newlines(content, uses_crlf);
-            let _ = atomic_write(&ours_path, &final_output);
+            let _ = atomic_write(target, &final_output);
             ExitCode::from(1)
         }
         Err(merge::MergeFailure::SystemError) => {
-            fallback_diffy_merge(&base_content, &ours_content, &theirs_content, &ours_path, uses_crlf)
+            fallback_diffy_merge(base, ours, theirs, target, uses_crlf, enable_repro, relative_path)
         }
     }
 }
@@ -189,7 +327,17 @@ fn fallback_diffy_merge(
     theirs: &str,
     target: &PathBuf,
     uses_crlf: bool,
+    enable_repro: bool,
+    relative_path: Option<&Path>,
 ) -> ExitCode {
+    if enable_repro {
+        if let Some(rel) = relative_path {
+            if let Some(fixture) = repro::ReproGenerator::generate_fixture(rel, base, ours, theirs) {
+                eprintln!("[graft repro] Generated isolated conflict fixture at: {}", fixture.display());
+            }
+        }
+    }
+
     match diffy::merge(base, ours, theirs) {
         Ok(clean) => {
             let output = restore_newlines(clean, uses_crlf);

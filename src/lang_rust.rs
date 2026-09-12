@@ -3,23 +3,23 @@ use crate::merge::{align_3way_keys, merge_text_block, MergeFailure};
 use std::collections::{BTreeMap, BTreeSet};
 use tree_sitter::{Node, Parser};
 
-pub fn merge_python(base: &str, ours: &str, theirs: &str) -> Result<String, MergeFailure> {
-    let (p_base, i_base, d_base) = parse_python_module(base).ok_or(MergeFailure::SystemError)?;
-    let (p_ours, i_ours, d_ours) = parse_python_module(ours).ok_or(MergeFailure::SystemError)?;
-    let (p_theirs, i_theirs, d_theirs) = parse_python_module(theirs).ok_or(MergeFailure::SystemError)?;
+pub fn merge_rust(base: &str, ours: &str, theirs: &str) -> Result<String, MergeFailure> {
+    let (p_base, u_base, d_base) = parse_rust_module(base).ok_or(MergeFailure::SystemError)?;
+    let (p_ours, u_ours, d_ours) = parse_rust_module(ours).ok_or(MergeFailure::SystemError)?;
+    let (p_theirs, u_theirs, d_theirs) = parse_rust_module(theirs).ok_or(MergeFailure::SystemError)?;
 
     let mut has_conflict = false;
     let merged_preamble = merge_text_block(&p_base, &p_ours, &p_theirs, &mut has_conflict);
-    let merged_imports = merge_python_imports(&i_base, &i_ours, &i_theirs);
-    let merged_declarations = merge_python_declarations(&d_base, &d_ours, &d_theirs, &mut has_conflict);
+    let merged_uses = merge_rust_uses(&u_base, &u_ours, &u_theirs);
+    let merged_declarations = merge_rust_declarations(&d_base, &d_ours, &d_theirs, &mut has_conflict);
 
     let mut output = String::new();
     if !merged_preamble.trim().is_empty() {
         output.push_str(merged_preamble.trim());
         output.push_str("\n\n");
     }
-    if !merged_imports.is_empty() {
-        output.push_str(&merged_imports);
+    if !merged_uses.is_empty() {
+        output.push_str(&merged_uses);
         output.push_str("\n\n");
     }
     if !merged_declarations.is_empty() {
@@ -34,16 +34,16 @@ pub fn merge_python(base: &str, ours: &str, theirs: &str) -> Result<String, Merg
     }
 }
 
-fn parse_python_module(source: &str) -> Option<(String, BTreeMap<String, BTreeSet<String>>, Vec<DeclarationItem>)> {
+fn parse_rust_module(source: &str) -> Option<(String, BTreeSet<String>, Vec<DeclarationItem>)> {
     let mut parser = Parser::new();
-    parser.set_language(&tree_sitter_python::language()).ok()?;
+    parser.set_language(&tree_sitter_rust::language()).ok()?;
     let tree = parser.parse(source, None)?;
     let root = tree.root_node();
 
-    let mut declarations = Vec::new();
     let mut preamble_end_byte = 0;
     let mut in_preamble = true;
-    let mut imports: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut uses = BTreeSet::new();
+    let mut declarations = Vec::new();
     let mut pending_comments = Vec::new();
 
     let mut cursor = root.walk();
@@ -51,7 +51,7 @@ fn parse_python_module(source: &str) -> Option<(String, BTreeMap<String, BTreeSe
         let kind = child.kind();
 
         if in_preamble {
-            if kind == "comment" {
+            if kind == "inner_attribute_item" || kind == "comment" {
                 preamble_end_byte = child.end_byte();
                 continue;
             } else {
@@ -66,20 +66,15 @@ fn parse_python_module(source: &str) -> Option<(String, BTreeMap<String, BTreeSe
             continue;
         }
 
-        if kind == "import_statement" || kind == "import_from_statement" {
+        if kind == "use_declaration" {
             if let Ok(text) = child.utf8_text(source.as_bytes()) {
-                let trimmed = text.trim();
-                if trimmed.starts_with("from ") {
-                    if let Some((module, symbols)) = parse_python_from_import(trimmed) {
-                        imports.entry(module).or_default().extend(symbols);
-                        pending_comments.clear();
-                        continue;
-                    }
-                }
+                uses.insert(text.trim().to_string());
             }
+            pending_comments.clear();
+            continue;
         }
 
-        let key = resolve_python_key(&child, source);
+        let key = resolve_rust_key(&child, source);
         if let Ok(raw_text) = child.utf8_text(source.as_bytes()) {
             let mut full_text = String::new();
             if !pending_comments.is_empty() {
@@ -102,81 +97,74 @@ fn parse_python_module(source: &str) -> Option<(String, BTreeMap<String, BTreeSe
         String::new()
     };
 
-    Some((preamble, imports, declarations))
+    Some((preamble, uses, declarations))
 }
 
-fn parse_python_from_import(line: &str) -> Option<(String, BTreeSet<String>)> {
-    let parts: Vec<&str> = line.split(" import ").collect();
-    if parts.len() != 2 {
-        return None;
-    }
-    let module = parts[0].trim_start_matches("from ").trim().to_string();
-    let symbols_part = parts[1].trim().trim_matches(|c| c == '(' || c == ')');
-    let symbols: BTreeSet<String> = symbols_part
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-
-    Some((module, symbols))
-}
-
-fn merge_python_imports(
-    _base: &BTreeMap<String, BTreeSet<String>>,
-    ours: &BTreeMap<String, BTreeSet<String>>,
-    theirs: &BTreeMap<String, BTreeSet<String>>,
-) -> String {
-    let mut all_modules = BTreeSet::new();
-    all_modules.extend(ours.keys());
-    all_modules.extend(theirs.keys());
-
-    let mut lines = Vec::new();
-    for mod_name in all_modules {
-        let mut symbols = BTreeSet::new();
-        if let Some(s) = ours.get(mod_name) {
-            symbols.extend(s.clone());
+fn resolve_rust_key(node: &Node, source: &str) -> Option<String> {
+    match node.kind() {
+        "function_item" => {
+            let name = node.child_by_field_name("name")?.utf8_text(source.as_bytes()).ok()?;
+            Some(format!("rs:fn:{}", name))
         }
-        if let Some(s) = theirs.get(mod_name) {
-            symbols.extend(s.clone());
+        "struct_item" => {
+            let name = node.child_by_field_name("name")?.utf8_text(source.as_bytes()).ok()?;
+            Some(format!("rs:struct:{}", name))
         }
-
-        let formatted = symbols.into_iter().collect::<Vec<_>>().join(", ");
-        lines.push(format!("from {} import {}", mod_name, formatted));
-    }
-
-    lines.join("\n")
-}
-
-fn resolve_python_key(node: &Node, source: &str) -> Option<String> {
-    let mut target = *node;
-    if target.kind() == "decorated_definition" {
-        let mut cursor = target.walk();
-        for child in target.children(&mut cursor) {
-            if child.kind() == "function_definition" || child.kind() == "class_definition" {
-                target = child;
-                break;
+        "enum_item" => {
+            let name = node.child_by_field_name("name")?.utf8_text(source.as_bytes()).ok()?;
+            Some(format!("rs:enum:{}", name))
+        }
+        "trait_item" => {
+            let name = node.child_by_field_name("name")?.utf8_text(source.as_bytes()).ok()?;
+            Some(format!("rs:trait:{}", name))
+        }
+        "impl_item" => {
+            let type_node = node.child_by_field_name("type")?;
+            let type_name = type_node.utf8_text(source.as_bytes()).ok()?;
+            if let Some(trait_node) = node.child_by_field_name("trait") {
+                let trait_name = trait_node.utf8_text(source.as_bytes()).ok()?;
+                Some(format!("rs:impl:{}:for:{}", trait_name, type_name))
+            } else {
+                Some(format!("rs:impl:{}", type_name))
             }
         }
-    }
-
-    match target.kind() {
-        "function_definition" => {
-            let name = target.child_by_field_name("name")?.utf8_text(source.as_bytes()).ok()?;
-            Some(format!("py:fn:{}", name))
+        "mod_item" => {
+            let name = node.child_by_field_name("name")?.utf8_text(source.as_bytes()).ok()?;
+            Some(format!("rs:mod:{}", name))
         }
-        "class_definition" => {
-            let name = target.child_by_field_name("name")?.utf8_text(source.as_bytes()).ok()?;
-            Some(format!("py:class:{}", name))
-        }
-        "import_statement" => {
-            let text = target.utf8_text(source.as_bytes()).ok()?;
-            Some(format!("py:import:{}", text.trim()))
+        "type_item" => {
+            let name = node.child_by_field_name("name")?.utf8_text(source.as_bytes()).ok()?;
+            Some(format!("rs:type:{}", name))
         }
         _ => None,
     }
 }
 
-fn merge_python_declarations(
+fn merge_rust_uses(
+    base: &BTreeSet<String>,
+    ours: &BTreeSet<String>,
+    theirs: &BTreeSet<String>,
+) -> String {
+    let mut resolved = BTreeSet::new();
+
+    for u in ours {
+        resolved.insert(u.clone());
+    }
+    for u in theirs {
+        resolved.insert(u.clone());
+    }
+    for u in base {
+        if !ours.contains(u) && theirs.contains(u) {
+            resolved.remove(u);
+        } else if !theirs.contains(u) && ours.contains(u) {
+            resolved.remove(u);
+        }
+    }
+
+    resolved.into_iter().collect::<Vec<_>>().join("\n")
+}
+
+fn merge_rust_declarations(
     base: &[DeclarationItem],
     ours: &[DeclarationItem],
     theirs: &[DeclarationItem],
@@ -248,13 +236,13 @@ fn merge_python_declarations(
             (Some(bv), Some(ov), None) => {
                 if ov != bv {
                     *has_conflict = true;
-                    resolved.push(format!("<<<<<<< OURS\n{}\n=======\n# DELETED IN THEIRS\n>>>>>>> THEIRS", ov));
+                    resolved.push(format!("<<<<<<< OURS\n{}\n=======\n// DELETED IN THEIRS\n>>>>>>> THEIRS", ov));
                 }
             }
             (Some(bv), None, Some(tv)) => {
                 if tv != bv {
                     *has_conflict = true;
-                    resolved.push(format!("<<<<<<< OURS\n# DELETED IN OURS\n=======\n{}\n>>>>>>> THEIRS", tv));
+                    resolved.push(format!("<<<<<<< OURS\n// DELETED IN OURS\n=======\n{}\n>>>>>>> THEIRS", tv));
                 }
             }
             _ => {}

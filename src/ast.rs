@@ -1,4 +1,6 @@
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet};
+use std::hash::{Hash, Hasher};
 use tree_sitter::{Language, Node, Parser};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -28,6 +30,12 @@ pub struct ParsedModule {
     pub preamble: String,
     pub imports: BTreeMap<String, ImportGroup>,
     pub declarations: Vec<DeclarationItem>,
+}
+
+fn hash_content(s: &str) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    s.hash(&mut hasher);
+    hasher.finish()
 }
 
 pub fn parse_module(source: &str, is_tsx: bool) -> Option<ParsedModule> {
@@ -76,7 +84,7 @@ pub fn parse_module(source: &str, is_tsx: bool) -> Option<ParsedModule> {
             continue;
         }
 
-        let key = resolve_declaration_key(&child, source);
+        let mut key = resolve_declaration_key(&child, source);
         if let Ok(raw_text) = child.utf8_text(source.as_bytes()) {
             let mut full_text = String::new();
             if !pending_comments.is_empty() {
@@ -85,6 +93,10 @@ pub fn parse_module(source: &str, is_tsx: bool) -> Option<ParsedModule> {
                 pending_comments.clear();
             }
             full_text.push_str(raw_text);
+
+            if key.is_none() {
+                key = Some(format!("unkeyed:{:016x}", hash_content(full_text.trim())));
+            }
 
             if let Some(ref k) = key {
                 if let Some(last) = declarations.last_mut() {
@@ -104,13 +116,15 @@ pub fn parse_module(source: &str, is_tsx: bool) -> Option<ParsedModule> {
     }
 
     if !pending_comments.is_empty() {
+        let comment_text = pending_comments.join("\n");
+        let fallback_key = Some(format!("comment:{:016x}", hash_content(&comment_text)));
         if let Some(last) = declarations.last_mut() {
             last.text.push_str("\n\n");
-            last.text.push_str(&pending_comments.join("\n"));
+            last.text.push_str(&comment_text);
         } else {
             declarations.push(DeclarationItem {
-                key: None,
-                text: pending_comments.join("\n"),
+                key: fallback_key,
+                text: comment_text,
             });
         }
     }
@@ -152,8 +166,12 @@ fn resolve_declaration_key(node: &Node, source: &str) -> Option<String> {
     let mut target = *node;
 
     if target.kind() == "export_statement" {
+        let mut is_default = false;
         let mut cursor = target.walk();
         for child in target.children(&mut cursor) {
+            if child.kind() == "default" {
+                is_default = true;
+            }
             match child.kind() {
                 "function_declaration"
                 | "class_declaration"
@@ -166,6 +184,9 @@ fn resolve_declaration_key(node: &Node, source: &str) -> Option<String> {
                 }
                 _ => {}
             }
+        }
+        if is_default && target.kind() == "export_statement" {
+            return Some("export:default".to_string());
         }
     }
 

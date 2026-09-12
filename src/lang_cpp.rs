@@ -3,23 +3,23 @@ use crate::merge::{align_3way_keys, merge_text_block, MergeFailure};
 use std::collections::{BTreeMap, BTreeSet};
 use tree_sitter::{Node, Parser};
 
-pub fn merge_go(base: &str, ours: &str, theirs: &str) -> Result<String, MergeFailure> {
-    let (p_base, i_base, d_base) = parse_go_module(base).ok_or(MergeFailure::SystemError)?;
-    let (p_ours, i_ours, d_ours) = parse_go_module(ours).ok_or(MergeFailure::SystemError)?;
-    let (p_theirs, i_theirs, d_theirs) = parse_go_module(theirs).ok_or(MergeFailure::SystemError)?;
+pub fn merge_cpp(base: &str, ours: &str, theirs: &str) -> Result<String, MergeFailure> {
+    let (p_base, i_base, d_base) = parse_cpp_module(base).ok_or(MergeFailure::SystemError)?;
+    let (p_ours, i_ours, d_ours) = parse_cpp_module(ours).ok_or(MergeFailure::SystemError)?;
+    let (p_theirs, i_theirs, d_theirs) = parse_cpp_module(theirs).ok_or(MergeFailure::SystemError)?;
 
     let mut has_conflict = false;
     let merged_preamble = merge_text_block(&p_base, &p_ours, &p_theirs, &mut has_conflict);
-    let merged_imports = merge_go_imports(&i_base, &i_ours, &i_theirs);
-    let merged_declarations = merge_go_declarations(&d_base, &d_ours, &d_theirs, &mut has_conflict);
+    let merged_includes = merge_cpp_includes(&i_base, &i_ours, &i_theirs);
+    let merged_declarations = merge_cpp_declarations(&d_base, &d_ours, &d_theirs, &mut has_conflict);
 
     let mut output = String::new();
     if !merged_preamble.trim().is_empty() {
         output.push_str(merged_preamble.trim());
         output.push_str("\n\n");
     }
-    if !merged_imports.is_empty() {
-        output.push_str(&merged_imports);
+    if !merged_includes.is_empty() {
+        output.push_str(&merged_includes);
         output.push_str("\n\n");
     }
     if !merged_declarations.is_empty() {
@@ -34,148 +34,94 @@ pub fn merge_go(base: &str, ours: &str, theirs: &str) -> Result<String, MergeFai
     }
 }
 
-fn parse_go_module(source: &str) -> Option<(String, BTreeSet<String>, Vec<DeclarationItem>)> {
+fn parse_cpp_module(source: &str) -> Option<(String, BTreeSet<String>, Vec<DeclarationItem>)> {
     let mut parser = Parser::new();
-    parser.set_language(&tree_sitter_go::language()).ok()?;
+    parser.set_language(&tree_sitter_cpp::language()).ok()?;
     let tree = parser.parse(source, None)?;
     let root = tree.root_node();
 
     let mut declarations = Vec::new();
-    let mut preamble = String::new();
-    let mut imports = BTreeSet::new();
-    let mut pending_comments = Vec::new();
+    let preamble = String::new();
+    let mut includes = BTreeSet::new();
 
     let mut cursor = root.walk();
     for child in root.children(&mut cursor) {
         let kind = child.kind();
 
-        if kind == "package_clause" {
+        if kind == "preproc_include" {
             if let Ok(text) = child.utf8_text(source.as_bytes()) {
-                preamble = text.to_string();
+                includes.insert(text.trim().to_string());
             }
             continue;
         }
 
-        if kind == "comment" {
-            if let Ok(text) = child.utf8_text(source.as_bytes()) {
-                pending_comments.push(text.to_string());
-            }
-            continue;
-        }
-
-        if kind == "import_declaration" {
-            extract_go_imports(&child, source, &mut imports);
-            pending_comments.clear();
-            continue;
-        }
-
-        let key = resolve_go_key(&child, source);
+        let key = resolve_cpp_key(&child, source);
         if let Ok(raw_text) = child.utf8_text(source.as_bytes()) {
-            let mut full_text = String::new();
-            if !pending_comments.is_empty() {
-                full_text.push_str(&pending_comments.join("\n"));
-                full_text.push('\n');
-                pending_comments.clear();
-            }
-            full_text.push_str(raw_text);
-
             declarations.push(DeclarationItem {
                 key,
-                text: full_text,
+                text: raw_text.to_string(),
             });
         }
     }
 
-    Some((preamble, imports, declarations))
+    Some((preamble, includes, declarations))
 }
 
-fn extract_go_imports(node: &Node, source: &str, imports: &mut BTreeSet<String>) {
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if child.kind() == "import_spec" || child.kind() == "import_spec_list" {
-            if child.kind() == "import_spec" {
-                if let Ok(text) = child.utf8_text(source.as_bytes()) {
-                    imports.insert(text.trim().to_string());
-                }
-            } else {
-                let mut list_cursor = child.walk();
-                for spec in child.children(&mut list_cursor) {
-                    if spec.kind() == "import_spec" {
-                        if let Ok(text) = spec.utf8_text(source.as_bytes()) {
-                            imports.insert(text.trim().to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn resolve_go_key(node: &Node, source: &str) -> Option<String> {
+fn resolve_cpp_key(node: &Node, source: &str) -> Option<String> {
     match node.kind() {
-        "function_declaration" => {
-            let name = node.child_by_field_name("name")?.utf8_text(source.as_bytes()).ok()?;
-            Some(format!("go:fn:{}", name))
+        "function_definition" => {
+            let declarator = node.child_by_field_name("declarator")?;
+            let name = extract_cpp_name(&declarator, source)?;
+            Some(format!("cpp:fn:{}", name))
         }
-        "method_declaration" => {
+        "class_specifier" | "struct_specifier" => {
             let name = node.child_by_field_name("name")?.utf8_text(source.as_bytes()).ok()?;
-            Some(format!("go:method:{}", name))
+            Some(format!("cpp:class:{}", name))
         }
-        "type_declaration" => {
-            let mut cursor = node.walk();
-            for child in node.children(&mut cursor) {
-                if child.kind() == "type_spec" {
-                    if let Some(name_node) = child.child_by_field_name("name") {
-                        if let Ok(name) = name_node.utf8_text(source.as_bytes()) {
-                            return Some(format!("go:type:{}", name));
-                        }
-                    }
-                }
-            }
-            None
+        "namespace_definition" => {
+            let name = node.child_by_field_name("name")?.utf8_text(source.as_bytes()).ok()?;
+            Some(format!("cpp:ns:{}", name))
         }
         _ => None,
     }
 }
 
-fn merge_go_imports(
+fn extract_cpp_name(node: &Node, source: &str) -> Option<String> {
+    if node.kind() == "identifier" || node.kind() == "field_identifier" {
+        return node.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(name) = extract_cpp_name(&child, source) {
+            return Some(name);
+        }
+    }
+    None
+}
+
+fn merge_cpp_includes(
     base: &BTreeSet<String>,
     ours: &BTreeSet<String>,
     theirs: &BTreeSet<String>,
 ) -> String {
     let mut resolved = BTreeSet::new();
-
-    for imp in ours {
-        resolved.insert(imp.clone());
+    for inc in ours {
+        resolved.insert(inc.clone());
     }
-    for imp in theirs {
-        resolved.insert(imp.clone());
+    for inc in theirs {
+        resolved.insert(inc.clone());
     }
-    for imp in base {
-        if !ours.contains(imp) && theirs.contains(imp) {
-            resolved.remove(imp);
-        } else if !theirs.contains(imp) && ours.contains(imp) {
-            resolved.remove(imp);
+    for inc in base {
+        if !ours.contains(inc) && theirs.contains(inc) {
+            resolved.remove(inc);
+        } else if !theirs.contains(inc) && ours.contains(inc) {
+            resolved.remove(inc);
         }
     }
-
-    if resolved.is_empty() {
-        return String::new();
-    }
-
-    if resolved.len() == 1 {
-        return format!("import {}", resolved.iter().next().unwrap());
-    }
-
-    let lines = resolved
-        .into_iter()
-        .map(|s| format!("\t{}", s))
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!("import (\n{}\n)", lines)
+    resolved.into_iter().collect::<Vec<_>>().join("\n")
 }
 
-fn merge_go_declarations(
+fn merge_cpp_declarations(
     base: &[DeclarationItem],
     ours: &[DeclarationItem],
     theirs: &[DeclarationItem],
@@ -259,6 +205,5 @@ fn merge_go_declarations(
             _ => {}
         }
     }
-
     resolved.join("\n\n")
 }

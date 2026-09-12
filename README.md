@@ -2,9 +2,9 @@
 
 AST-aware merge driver for Git.
 
-Standard Git merges line-by-line. If two branches add adjacent imports or append functions at the bottom of a file, Git reports a conflict even when the changes are syntactically compatible.
+Standard Git merges line-by-line. If two branches add adjacent imports, update config arrays, or append functions, Git reports a conflict even when the changes are syntactically compatible.
 
-`graft` parses files using Tree-sitter to resolve these conflicts automatically.
+`graft` parses files using Tree-sitter to resolve these conflicts automatically while enforcing architectural boundaries, scanning for secret leaks, and tracking merge provenance.
 
 ## Supported Languages
 
@@ -19,11 +19,14 @@ Standard Git merges line-by-line. If two branches add adjacent imports or append
 ## Features
 
 - **AST 3-way merge**: Merges imports and top-level declarations without line-order conflicts.
-- **Merge summary**: Prints which declarations were kept and basic line provenance.
-- **Policy check**: Optional rule enforcement via `graft.policy.toml` (e.g. cross-import bans, line limits).
-- **Pre-merge check (`graft radar`)**: Checks working tree diff against target branch for overlapping files.
+- **Merge summary & provenance**: Prints kept declarations and calculates line contributions.
+- **Security & leak scanning**: Blocks merges that introduce high-entropy API keys or credentials.
+- **Time-travel rollback (`graft undo`)**: Restores files to their pre-merge state from local journals.
+- **Conflict fixture generator (`--repro`)**: Automatically generates standalone reproduction fixtures when a conflict occurs.
+- **Policy enforcement**: Enforces rules defined in `graft.policy.toml` (e.g. cross-import bans, function length limits).
+- **Pre-merge check (`graft radar`)**: Inspects repository state against target branch for overlapping hotspots.
 - **Interactive resolver (`graft mergetool`)**: Terminal interface for unresolvable conflicts.
-- **Local LLM fallback (`--ai`)**: Optional fallback using a local Ollama/OpenAI endpoint for divergent functions.
+- **Local LLM fallback (`--ai`)**: Context-sliced fallback using a local Ollama/OpenAI endpoint for divergent functions.
 
 ## Install
 
@@ -55,8 +58,17 @@ graft doctor
 # Check potential conflicts with target branch
 graft radar main
 
+# Revert file to pre-merge state
+graft undo <path>
+
+# View merge journal history
+graft log
+
 # Launch interactive resolver
 git mergetool -t graft
+
+# Merge with reproduction fixture generation on conflict
+graft <base> <ours> <theirs> -p <path> --repro
 
 # Merge with local AI fallback enabled
 graft <base> <ours> <theirs> -p <path> --ai
@@ -69,8 +81,19 @@ Optional policy file placed in the repository root:
 ```toml
 [rules]
 max_function_lines = 120
+block_leaked_secrets = true
 
 [[rules.forbid_cross_import]]
 from = "src/domain"
 to = "src/infra"
 ```
+
+## Ecosystem
+
+`graft` integrates subsystems inspired by:
+
+- [chronicle](https://github.com/idunnowutuwant/chronicle) - Time-travel journal and storage architecture
+- [leakguard](https://github.com/idunnowutuwant/leakguard) - AST-guided secret and entropy scanner
+- [repro](https://github.com/idunnowutuwant/repro) - Automated conflict reproduction generator
+- [trace-ctx](https://github.com/idunnowutuwant/trace-ctx) - Context window slicing and token scrubbing
+- [git-state](https://github.com/idunnowutuwant/git-state) - Fast repository state inspection
