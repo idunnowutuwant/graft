@@ -1,5 +1,6 @@
 mod ai;
 mod ast;
+mod benchmark;
 mod chronicle;
 mod explainer;
 mod git_state;
@@ -20,8 +21,8 @@ mod radar;
 mod repro;
 mod semantic;
 mod session;
+mod test_builder;
 mod trace_ctx;
-mod benchmark;
 
 use clap::{Parser, Subcommand};
 use std::fs;
