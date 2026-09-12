@@ -3,6 +3,8 @@ mod ast;
 mod chronicle;
 mod explainer;
 mod git_state;
+mod graph;
+mod hook;
 mod init;
 mod json_merge;
 mod lang_cpp;
@@ -19,6 +21,7 @@ mod repro;
 mod semantic;
 mod session;
 mod trace_ctx;
+mod benchmark;
 
 use clap::{Parser, Subcommand};
 use std::fs;
@@ -26,7 +29,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 #[derive(Parser, Debug)]
-#[command(name = "graft", version, about = "AST-aware cognitive merge driver for Git")]
+#[command(name = "graft", version, about = "AST-aware cognitive merge platform for Git")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -71,11 +74,20 @@ enum Commands {
         #[arg(value_name = "TARGET_BRANCH", default_value = "main")]
         target: String,
     },
+    Impact {
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
+    Hook {
+        #[arg(value_name = "ACTION")]
+        action: String,
+    },
     Undo {
         #[arg(value_name = "PATH")]
         path: PathBuf,
     },
     Log,
+    Bench,
 }
 
 fn main() -> ExitCode {
@@ -107,6 +119,31 @@ fn main() -> ExitCode {
                     Err(_) => ExitCode::from(1),
                 };
             }
+            Commands::Impact { file } => {
+                let graph = graph::DependencyGraph::build(Path::new("."));
+                let (count, affected) = graph.calculate_blast_radius(&file);
+                println!("Blast Radius for {}: {} downstream files affected", file.display(), count);
+                for aff in affected {
+                    println!("  ↳ {}", aff.display());
+                }
+                return ExitCode::SUCCESS;
+            }
+            Commands::Hook { action } => {
+                if action == "install" {
+                    return match hook::HookManager::install_hooks() {
+                        Ok(_) => ExitCode::SUCCESS,
+                        Err(_) => ExitCode::from(1),
+                    };
+                } else if action == "uninstall" {
+                    return match hook::HookManager::uninstall_hooks() {
+                        Ok(_) => ExitCode::SUCCESS,
+                        Err(_) => ExitCode::from(1),
+                    };
+                } else {
+                    eprintln!("Unknown hook action: {}. Use 'install' or 'uninstall'", action);
+                    return ExitCode::from(1);
+                }
+            }
             Commands::Undo { path } => {
                 let chronicle = chronicle::Chronicle::new();
                 return match chronicle.rollback_latest(&path) {
@@ -122,6 +159,10 @@ fn main() -> ExitCode {
             }
             Commands::Log => {
                 chronicle::Chronicle::new().list_history();
+                return ExitCode::SUCCESS;
+            }
+                Commands::Bench => {
+                benchmark::BenchmarkSuite::run();
                 return ExitCode::SUCCESS;
             }
         }

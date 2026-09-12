@@ -1,0 +1,30 @@
+name: 'Graft Auto-Merge & PR Guard'
+description: 'Zero-conflict AST merge engine, architectural policy linter, and proactive radar'
+inputs:
+  target-branch:
+    description: 'Target branch to compare against'
+    required: false
+    default: 'main'
+  auto-resolve:
+    description: 'Attempt automatic AST merge resolution on conflict'
+    required: false
+    default: 'true'
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up Graft
+      shell: bash
+      run: |
+        cargo build --release
+        sudo cp target/release/graft /usr/local/bin/ || cp target/release/graft.exe /usr/bin/ || true
+        graft init --global
+
+    - name: Run Radar Pre-merge Inspection
+      shell: bash
+      run: |
+        graft radar ${{ inputs.target-branch }}
+
+    - name: Run Architecture Policy Check
+      shell: bash
+      run: |
+        graft doctor

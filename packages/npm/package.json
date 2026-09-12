@@ -1,0 +1,14 @@
+{
+  "name": "graft-merge",
+  "version": "0.5.0",
+  "description": "AST-aware cognitive merge platform for Git",
+  "bin": {
+    "graft": "./bin/cli.js"
+  },
+  "scripts": {
+    "postinstall": "node ./bin/install.js"
+  },
+  "keywords": ["git", "merge-driver", "ast", "tree-sitter", "conflict-resolver"],
+  "author": "idunnowutuwant",
+  "license": "MIT"
+}

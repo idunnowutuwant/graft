@@ -1,0 +1,29 @@
+{
+  "name": "graft-vscode",
+  "displayName": "Graft: AST Git Merge & Radar",
+  "description": "Visual AST conflict resolution, proactive radar, and one-click rollback",
+  "version": "0.1.0",
+  "publisher": "idunnowutuwant",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": ["SCM Providers", "Programming Languages"],
+  "activationEvents": ["workspaceContains:.git"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "graft.radar",
+        "title": "Graft: Scan Branch Conflict Radar"
+      },
+      {
+        "command": "graft.impact",
+        "title": "Graft: Calculate File Blast Radius"
+      },
+      {
+        "command": "graft.undo",
+        "title": "Graft: Rollback Latest Merge Snapshot"
+      }
+    ]
+  }
+}

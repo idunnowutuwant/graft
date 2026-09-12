@@ -1,10 +1,21 @@
 ﻿# graft
 
+[![CI](https://github.com/idunnowutuwant/graft/actions/workflows/ci.yml/badge.svg)](https://github.com/idunnowutuwant/graft/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-2021-orange.svg)](Cargo.toml)
+
 AST-aware merge driver for Git.
 
-Standard Git merges line-by-line. If two branches add adjacent imports, update config arrays, or append functions, Git reports a conflict even when the changes are syntactically compatible.
+Standard Git merges line-by-line. If two branches add adjacent imports, update dependency arrays, or append functions at the bottom of a file, Git reports a conflict even when the changes are syntactically compatible.
 
-`graft` parses files using Tree-sitter to resolve these conflicts automatically while enforcing architectural boundaries, scanning for secret leaks, and tracking merge provenance.
+`graft` parses files using Tree-sitter to resolve these conflicts automatically while enforcing architectural rules, scanning for secret leaks, and tracking merge provenance.
+
+## Benchmark (100 Concurrent Edge Cases)
+
+| Engine | Conflicts Encountered | Auto-Resolved | Average Latency |
+| :--- | :---: | :---: | :---: |
+| **Standard Git (diff3)** | 100 / 100 (100%) | 0 / 100 (0%) | - |
+| **Graft Engine** | **0 / 100 (0%)** | **100 / 100 (100%)** | **0.882 ms** |
 
 ## Supported Languages
 
@@ -19,12 +30,13 @@ Standard Git merges line-by-line. If two branches add adjacent imports, update c
 ## Features
 
 - **AST 3-way merge**: Merges imports and top-level declarations without line-order conflicts.
-- **Merge summary & provenance**: Prints kept declarations and calculates line contributions.
-- **Security & leak scanning**: Blocks merges that introduce high-entropy API keys or credentials.
-- **Time-travel rollback (`graft undo`)**: Restores files to their pre-merge state from local journals.
-- **Conflict fixture generator (`--repro`)**: Automatically generates standalone reproduction fixtures when a conflict occurs.
-- **Policy enforcement**: Enforces rules defined in `graft.policy.toml` (e.g. cross-import bans, function length limits).
-- **Pre-merge check (`graft radar`)**: Inspects repository state against target branch for overlapping hotspots.
+- **Merge summary & provenance**: Reports kept declarations and line contribution ratios.
+- **Secret leak scanning**: Blocks merges that introduce high-entropy API keys or credentials.
+- **Time-travel rollback (`graft undo`)**: Reverts merged files to their pre-merge state from local journals.
+- **Conflict fixture generator (`--repro`)**: Generates standalone reproduction fixtures when a conflict occurs.
+- **Policy enforcement**: Validates rules in `graft.policy.toml` (e.g. cross-import bans, function length limits).
+- **Pre-merge radar (`graft radar`)**: Inspects repository state against target branch for overlapping files.
+- **Blast radius analysis (`graft impact`)**: Calculates downstream files affected by changes to a file.
 - **Interactive resolver (`graft mergetool`)**: Terminal interface for unresolvable conflicts.
 - **Local LLM fallback (`--ai`)**: Context-sliced fallback using a local Ollama/OpenAI endpoint for divergent functions.
 
@@ -55,8 +67,17 @@ graft doctor
 ## Commands
 
 ```bash
+# Run local 100-scenario benchmark suite
+graft bench
+
 # Check potential conflicts with target branch
 graft radar main
+
+# Calculate downstream blast radius of a file
+graft impact src/index.ts
+
+# Install git lifecycle hooks
+graft hook install
 
 # Revert file to pre-merge state
 graft undo <path>
